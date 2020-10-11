@@ -1175,7 +1175,8 @@ pub(crate) const AST_SRC: AstSrc = AstSrc {
             TsTuple,
             TsParen,
             TsTypeRef,
-            TsTemplate
+            TsTemplate,
+            TsMappedType
         }
 
         enum TsThisOrName {
