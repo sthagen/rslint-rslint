@@ -15,6 +15,7 @@ unexpected behavior.
 | [no-await-in-loop](./no-await-in-loop.md) | Disallow await inside of loops. |
 | [no-compare-neg-zero](./no-compare-neg-zero.md) | Disallow comparison against `-0` which yields unexpected behavior. |
 | [no-cond-assign](./no-cond-assign.md) | Forbid the use of assignment expressions in conditions which may yield unwanted behavior. |
+| [no-confusing-arrow](./no-confusing-arrow.md) | Disallow arrow functions where they could be confused with comparisons. |
 | [no-constant-condition](./no-constant-condition.md) | Disallow constant conditions which always yield one result. |
 | [no-debugger](./no-debugger.md) | Disallow the use of debugger statements. |
 | [no-dupe-keys](./no-dupe-keys.md) | Disallow duplicate keys in object literals. |
@@ -24,6 +25,7 @@ unexpected behavior.
 | [no-extra-semi](./no-extra-semi.md) | Disallow unneeded semicolons. |
 | [no-inner-declarations](./no-inner-declarations.md) | Disallow variable and function declarations in nested blocks. |
 | [no-irregular-whitespace](./no-irregular-whitespace.md) | Disallow weird/irregular whitespace. |
+| [no-new-symbol](./no-new-symbol.md) | Disallow constructing `Symbol` using `new`. |
 | [no-prototype-builtins](./no-prototype-builtins.md) | Disallow direct use of `Object.prototype` builtins directly. |
 | [no-setter-return](./no-setter-return.md) | Disallow setters to return values. |
 | [no-sparse-arrays](./no-sparse-arrays.md) | Disallow sparse arrays. |

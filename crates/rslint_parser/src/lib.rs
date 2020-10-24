@@ -22,6 +22,7 @@
 //! - Very easy tree traversal through [`SyntaxNode`](rslint_rowan::SyntaxNode).
 //! - Descriptive errors with multiple labels and notes.
 //! - Very cheap cloning, cloning an ast node or syntax node is the cost of adding a reference to an Rc.
+//! - Cheap incremental reparsing of changed text.
 //!
 //! The crate further includes utilities such as:
 //! - ANSI syntax highlighting of nodes (through [`util`]) or text through [`rslint_lexer`].
@@ -98,7 +99,7 @@ pub use rslint_syntax::*;
 
 /// The type of error emitted by the parser, this includes warnings, notes, and errors.  
 /// It also includes labels and possibly notes
-pub type ParserError = codespan_reporting::diagnostic::Diagnostic<usize>;
+pub type ParserError = rslint_errors::Diagnostic;
 
 use rslint_lexer::color;
 use std::ops::Range;

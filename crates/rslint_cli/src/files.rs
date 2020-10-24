@@ -1,9 +1,9 @@
 //! The structure responsible for managing IO and the files implementation for codespan.
 
-use codespan_reporting::files::Files;
+use crate::lint_warn;
 use glob::Paths;
 use hashbrown::HashMap;
-use std::borrow::Cow;
+use rslint_errors::file::{FileId, Files};
 use std::fs::read_to_string;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -27,36 +27,28 @@ pub struct FileWalker {
     pub files: HashMap<usize, JsFile>,
 }
 
-impl<'a> Files<'a> for FileWalker {
-    type Name = Cow<'a, str>;
-    type Source = Cow<'a, str>;
-    type FileId = usize;
-
-    fn name(&'a self, id: Self::FileId) -> Option<Cow<'a, str>> {
+impl Files for FileWalker {
+    fn name(&self, id: FileId) -> Option<&str> {
         let entry = self.files.get(&id)?;
-        Some(
-            entry
-                .path
-                .as_ref()
-                .map(|p| p.to_string_lossy())
-                .unwrap_or_else(|| (&entry.name).into()),
-        )
+        let name = entry
+            .path
+            .as_ref()
+            .and_then(|path| path.to_str())
+            .unwrap_or_else(|| entry.name.as_str());
+        Some(name)
     }
 
-    fn source(&'a self, id: Self::FileId) -> Option<Cow<'a, str>> {
+    fn source(&self, id: FileId) -> Option<&str> {
         let entry = self.files.get(&id)?;
-        Some((&entry.source).into())
+        Some(&entry.source)
     }
 
-    fn line_index(&self, id: Self::FileId, byte_index: usize) -> Option<usize> {
-        self.files.get(&id)?.line_index(byte_index)
+    fn line_index(&self, id: FileId, byte_index: usize) -> Option<usize> {
+        Some(self.files.get(&id)?.line_index(byte_index))
     }
 
-    fn line_range(&self, id: Self::FileId, line_index: usize) -> Option<Range<usize>> {
-        let line_start = self.line_start(id, line_index)?;
-        let next_line_start = self.line_start(id, line_index + 1)?;
-
-        Some(line_start..next_line_start)
+    fn line_range(&self, file_id: FileId, line_index: usize) -> Option<Range<usize>> {
+        self.files.get(&file_id)?.line_range(line_index)
     }
 }
 
@@ -101,10 +93,15 @@ impl FileWalker {
                 let thread = Builder::new()
                     .name(format!("io-{}", file.file_name().to_string_lossy()))
                     .spawn(move || {
-                        (
-                            read_to_string(file.path()).expect("Failed to read file"),
-                            file.path().to_owned(),
-                        )
+                        let path = file.path();
+                        let content = match read_to_string(path) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                crate::lint_err!("failed to read file {}: {}", path.display(), err);
+                                return None;
+                            }
+                        };
+                        Some((content, file.path().to_owned()))
                     })
                     .expect("Failed to spawn IO thread");
                 threads.push(thread);
@@ -114,7 +111,7 @@ impl FileWalker {
         let jsfiles = threads
             .into_iter()
             .map(|handle| handle.join())
-            .filter_map(Result::ok)
+            .flat_map(|res| res.ok().flatten())
             .map(|(src, path)| JsFile::new_concrete(src, path))
             .map(|file| (file.id, file))
             .collect();
@@ -124,6 +121,26 @@ impl FileWalker {
 
     pub fn line_start(&self, id: usize, line_index: usize) -> Option<usize> {
         self.files.get(&id)?.line_start(line_index)
+    }
+
+    /// try loading a file's source code and updating the correspoding file in the walker
+    pub fn maybe_update_file_src(&mut self, path: PathBuf) {
+        if let Some(file) = self.files.values_mut().find(|f| {
+            f.path
+                .clone()
+                .map_or(false, |x| x.file_name() == path.file_name())
+        }) {
+            let src = if let Ok(src) = read_to_string(&path) {
+                src
+            } else {
+                return lint_warn!(
+                    "failed to reload the source code at `{}`",
+                    path.to_string_lossy()
+                );
+            };
+            file.source = src;
+            file.line_starts = JsFile::line_starts(&file.source).collect();
+        }
     }
 }
 
@@ -135,6 +152,7 @@ pub struct JsFile {
     pub name: String,
     /// The path in disk if this is a concrete file.
     pub path: Option<PathBuf>,
+
     /// The codespan id assigned to this file used to refer back to it.
     pub id: usize,
     /// Whether this is a js or mjs file (script vs module).
@@ -175,7 +193,13 @@ impl JsFile {
         }
     }
 
-    fn line_starts<'a>(source: &'a str) -> impl Iterator<Item = usize> + 'a {
+    pub fn update_src(&mut self, new: String) {
+        self.line_starts = Self::line_starts(&new).collect();
+        self.source = new;
+    }
+
+    // TODO: Needs to work correctly for \u2028, \u2029, and \r line endings
+    pub fn line_starts<'a>(source: &'a str) -> impl Iterator<Item = usize> + 'a {
         std::iter::once(0).chain(source.match_indices('\n').map(|(i, _)| i + 1))
     }
 
@@ -189,15 +213,22 @@ impl JsFile {
         }
     }
 
-    pub fn line_index(&self, byte_index: usize) -> Option<usize> {
+    pub fn line_index(&self, byte_index: usize) -> usize {
         match self.line_starts.binary_search(&byte_index) {
-            Ok(line) => Some(line),
-            Err(next_line) => Some(next_line - 1),
+            Ok(line) => line,
+            Err(next_line) => next_line - 1,
         }
     }
 
     pub fn line_col_to_index(&self, line: usize, column: usize) -> Option<usize> {
         let start = self.line_start(line)?;
         Some(start + column)
+    }
+
+    fn line_range(&self, line_index: usize) -> Option<Range<usize>> {
+        let line_start = self.line_start(line_index)?;
+        let next_line_start = self.line_start(line_index + 1)?;
+
+        Some(line_start..next_line_start)
     }
 }

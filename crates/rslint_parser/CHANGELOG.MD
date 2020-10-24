@@ -6,9 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Made "redundant strict mode declaration" have a primary label instead of a single secondary label
+
+## [0.2.1] - 2020-10-20
+
+### Changed
+
+- Switched from codespan-reporting to a custom errors crate
+
+### Added
+
+- Added handling of shebang where the parser consumes shebang if exists at the start
+
 ### Fixed
 
 - Fixed handling of `/=` and `>>=`
+- Fixed arrow expr parameters sometimes being `NAME_REF` instead of `NAME`
 
 ## [0.2.0] - 2020-10-8
 

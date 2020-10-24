@@ -4,29 +4,21 @@ mod files;
 mod panic_hook;
 
 pub use self::{cli::ExplanationRunner, config::*, files::*, panic_hook::*};
-pub use rslint_core::{Diagnostic, DiagnosticBuilder, Outcome};
-
-use codespan_reporting::diagnostic::Severity;
-use codespan_reporting::term::Config;
-use codespan_reporting::term::{
-    emit,
-    termcolor::{self, ColorChoice, StandardStream},
+pub use rslint_core::Outcome;
+pub use rslint_errors::{
+    file, file::Files, Diagnostic, Emitter, Formatter, LongFormatter, Severity, ShortFormatter,
 };
-use rayon::prelude::*;
-use rslint_core::{lint_file, CstRuleStore, RuleLevel};
 
-pub(crate) const DOCS_LINK_BASE: &str =
-    "https://raw.githubusercontent.com/RDambrosio016/RSLint/master/docs/rules";
+use colored::*;
+use rayon::prelude::*;
+use rslint_core::autofix::recursively_apply_fixes;
+use rslint_core::{lint_file, util::find_best_match_for_name, CstRuleStore, LintResult, RuleLevel};
+use std::fs::write;
+
 pub(crate) const REPO_LINK: &str = "https://github.com/RDambrosio016/RSLint";
 
-pub fn codespan_config() -> Config {
-    let mut base = Config::default();
-    base.chars.multi_top_left = '┌';
-    base.chars.multi_bottom_left = '└';
-    base
-}
-
-pub fn run(glob: String, verbose: bool) {
+#[allow(unused_must_use)]
+pub fn run(glob: String, verbose: bool, fix: bool, dirty: bool, formatter: Option<String>) {
     let res = glob::glob(&glob);
     if let Err(err) = res {
         lint_err!("Invalid glob pattern: {}", err);
@@ -34,41 +26,20 @@ pub fn run(glob: String, verbose: bool) {
     }
 
     let handle = config::Config::new_threaded();
-    let walker = FileWalker::from_glob(res.unwrap());
+    let mut walker = FileWalker::from_glob(res.unwrap());
     let joined = handle.join();
-
-    let config = if let Ok(Some(Err(err))) = joined.as_ref() {
-        // this is a bit of a hack. we should do this in a better way in the future
-        // toml also seems to give incorrect column numbers so we can't use it currently
-        let regex = regex::Regex::new(r"\. did you mean '(.*?)'\?").unwrap();
-        let location_regex = regex::Regex::new(r"at line \d+").unwrap();
-        let mut msg = err
-            .to_string()
-            .split_at(location_regex.find(&err.to_string()).unwrap().range().start)
-            .0
-            .to_string();
-        let old = msg.clone();
-
-        let diagnostic = if let Some(found) = regex.find(&old) {
-            msg.replace_range(found.range(), "");
-            DiagnosticBuilder::error(0, "config", &msg).note(format!(
-                "help: did you mean '{}'?",
-                regex.captures(&old).unwrap().get(1).unwrap().as_str()
-            ))
-        } else {
-            DiagnosticBuilder::error(0, "config", msg)
-        };
-
-        return emit_diagnostic(diagnostic, &FileWalker::empty());
-    } else {
-        joined.unwrap().map(|res| res.unwrap())
-    };
+    let config = joined.expect("config thread paniced");
 
     let store = if let Some(cfg) = config.as_ref().and_then(|cfg| cfg.rules.as_ref()) {
         cfg.store()
     } else {
         CstRuleStore::new().builtins()
     };
+    let mut formatter = formatter
+        .or_else(|| config.as_ref().map(|c| c.errors.formatter.clone()))
+        .unwrap_or_else(|| String::from("long"));
+
+    verify_formatter(&mut formatter);
 
     if walker.files.is_empty() {
         lint_err!("No matching files found");
@@ -77,11 +48,12 @@ pub fn run(glob: String, verbose: bool) {
 
     let mut results = walker
         .files
-        .par_iter()
-        .map(|(id, file)| {
+        .par_keys()
+        .map(|id| {
+            let file = walker.files.get(id).unwrap();
             lint_file(
                 *id,
-                &file.source,
+                &file.source.clone(),
                 file.kind == JsFileKind::Module,
                 &store,
                 verbose,
@@ -89,7 +61,7 @@ pub fn run(glob: String, verbose: bool) {
         })
         .filter_map(|res| {
             if let Err(diagnostic) = res {
-                emit_diagnostic(diagnostic, &walker);
+                emit_diagnostic(&diagnostic, &walker);
                 None
             } else {
                 res.ok()
@@ -97,10 +69,80 @@ pub fn run(glob: String, verbose: bool) {
         })
         .collect::<Vec<_>>();
 
+    let fix_count = if fix {
+        apply_fixes(&mut results, &mut walker, dirty)
+    } else {
+        0
+    };
+    print_results(
+        &mut results,
+        &walker,
+        config.as_ref(),
+        fix_count,
+        &formatter,
+    );
+}
+
+pub fn apply_fixes(results: &mut Vec<LintResult>, walker: &mut FileWalker, dirty: bool) -> usize {
+    let mut fix_count = 0;
+    // TODO: should we aquire a file lock if we know we need to run autofix?
+    for res in results {
+        let file = walker.files.get_mut(&res.file_id).unwrap();
+        // skip virtual files
+        if file.path.is_none() {
+            continue;
+        }
+        if res
+            .parser_diagnostics
+            .iter()
+            .any(|x| x.severity == Severity::Error)
+            && !dirty
+        {
+            lint_note!(
+                "skipping autofix for `{}` because it contains syntax errors",
+                file.path.as_ref().unwrap().to_string_lossy()
+            );
+            continue;
+        }
+        let original_problem_num = res
+            .rule_results
+            .iter()
+            .filter(|(_, x)| x.outcome() == Outcome::Warning || x.outcome() == Outcome::Failure)
+            .map(|(_, res)| res.diagnostics.len())
+            .sum::<usize>();
+        let fixed = recursively_apply_fixes(res);
+        let new_problem_num = res
+            .rule_results
+            .iter()
+            .filter(|(_, x)| x.outcome() == Outcome::Warning || x.outcome() == Outcome::Failure)
+            .map(|(_, res)| res.diagnostics.len())
+            .sum::<usize>();
+        let path = file.path.as_ref().unwrap();
+        if let Err(err) = write(path, fixed.clone()) {
+            lint_err!("failed to write to `{:#?}`: {}", path, err.to_string());
+        } else {
+            file.update_src(fixed);
+            fix_count += original_problem_num.saturating_sub(new_problem_num);
+        }
+    }
+    fix_count
+}
+
+pub(crate) fn print_results(
+    results: &mut Vec<LintResult>,
+    walker: &FileWalker,
+    config: Option<&config::Config>,
+    fix_count: usize,
+    formatter: &str,
+) {
     // Map each diagnostic to the correct level according to configured rule level
     for result in results.iter_mut() {
-        for (rule_name, diagnostics) in result.rule_diagnostics.iter_mut() {
-            if let Some(conf) = config.as_ref().and_then(|cfg| cfg.rules.as_ref()) {
+        for (rule_name, diagnostics) in result
+            .rule_results
+            .iter_mut()
+            .map(|x| (x.0, &mut x.1.diagnostics))
+        {
+            if let Some(conf) = config.and_then(|cfg| cfg.rules.as_ref()) {
                 remap_diagnostics_to_level(diagnostics, conf.rule_level_by_name(rule_name));
             }
         }
@@ -121,51 +163,79 @@ pub fn run(glob: String, verbose: bool) {
 
     let overall = Outcome::merge(results.iter().map(|res| res.outcome()));
 
-    for result in results.into_iter() {
-        for diagnostic in result.diagnostics() {
-            emit(
-                &mut StandardStream::stderr(ColorChoice::Always),
-                &codespan_config(),
-                &walker,
-                diagnostic,
-            )
-            .expect("Failed to throw diagnostic");
-        }
+    for result in results.iter_mut() {
+        emit_diagnostics(
+            formatter,
+            &result.diagnostics().cloned().collect::<Vec<_>>(),
+            walker,
+        );
     }
 
-    output_overall(failures, warnings, successes);
+    output_overall(failures, warnings, successes, fix_count);
     if overall == Outcome::Failure {
         println!("\nhelp: for more information about the errors try the explain command: `rslint explain <rules>`");
     }
 }
 
-fn output_overall(failures: usize, warnings: usize, successes: usize) {
-    use std::io::Write;
-    use termcolor::{Color, ColorSpec, WriteColor};
+pub fn verify_formatter(formatter: &mut String) {
+    if !matches!(formatter.as_str(), "short" | "long") {
+        if let Some(suggestion) =
+            find_best_match_for_name(vec!["short", "long"].into_iter(), formatter, None)
+        {
+            lint_err!(
+                "unknown formatter `{}`, using default formatter, did you mean `{}`?",
+                formatter,
+                suggestion
+            );
+        } else {
+            lint_err!("unknown formatter `{}`, using default formatter", formatter);
+        }
+        *formatter = "long".to_string();
+    }
+}
 
-    let mut stdout = StandardStream::stdout(ColorChoice::Always);
-    stdout
-        .set_color(ColorSpec::new().set_fg(Some(Color::White)))
-        .unwrap();
-    write!(&mut stdout, "\nOutcome: ").unwrap();
-    stdout
-        .set_color(ColorSpec::new().set_fg(Some(Color::Red)))
-        .unwrap();
-    write!(&mut stdout, "{}", failures).unwrap();
-    stdout.reset().unwrap();
-    write!(&mut stdout, " fail, ").unwrap();
-    stdout
-        .set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
-        .unwrap();
-    write!(&mut stdout, "{}", warnings).unwrap();
-    stdout.reset().unwrap();
-    write!(&mut stdout, " warn, ").unwrap();
-    stdout
-        .set_color(ColorSpec::new().set_fg(Some(Color::Green)))
-        .unwrap();
-    write!(&mut stdout, "{}", successes).unwrap();
-    stdout.reset().unwrap();
-    writeln!(&mut stdout, " success").unwrap();
+pub fn emit_diagnostics(formatter: &str, diagnostics: &[Diagnostic], files: &dyn Files) {
+    match formatter {
+        "short" => {
+            if let Err(err) = ShortFormatter.emit_stderr(diagnostics, files) {
+                lint_err!("failed to emit diagnostic: {}", err);
+            }
+        }
+        "long" => {
+            if let Err(err) = LongFormatter.emit_stderr(diagnostics, files) {
+                lint_err!("failed to emit diagnostic: {}", err);
+            }
+        }
+        f => {
+            if let Some(suggestion) =
+                find_best_match_for_name(vec!["short", "long"].into_iter(), f, None)
+            {
+                lint_err!("unknown formatter `{}`, did you mean `{}`?", f, suggestion);
+            } else {
+                lint_err!("unknown formatter `{}`", f);
+            }
+        }
+    }
+}
+
+#[allow(unused_must_use)]
+fn output_overall(failures: usize, warnings: usize, successes: usize, fix_count: usize) {
+    println!(
+        "{}: {} fail, {} warn, {} success{}",
+        "Outcome".white(),
+        failures.to_string().red(),
+        warnings.to_string().yellow(),
+        successes.to_string().green(),
+        if fix_count > 0 {
+            format!(
+                ", {} issue{} fixed",
+                fix_count.to_string().green(),
+                if fix_count == 1 { "" } else { "s" }
+            )
+        } else {
+            "".to_string()
+        }
+    );
 }
 
 /// Remap each error diagnostic to a warning diagnostic based on the rule's level.
@@ -174,7 +244,7 @@ fn output_overall(failures: usize, warnings: usize, successes: usize) {
 pub fn remap_diagnostics_to_level(diagnostics: &mut Vec<Diagnostic>, level: RuleLevel) {
     for diagnostic in diagnostics.iter_mut() {
         match diagnostic.severity {
-            Severity::Error | Severity::Bug if level == RuleLevel::Warning => {
+            Severity::Error if level == RuleLevel::Warning => {
                 diagnostic.severity = Severity::Warning
             }
             _ => {}
@@ -182,34 +252,25 @@ pub fn remap_diagnostics_to_level(diagnostics: &mut Vec<Diagnostic>, level: Rule
     }
 }
 
-pub fn emit_diagnostic(diagnostic: impl Into<Diagnostic>, walker: &FileWalker) {
-    use codespan_reporting::term::termcolor::ColorChoice::Always;
-
-    emit(
-        &mut termcolor::StandardStream::stderr(Always),
-        &crate::codespan_config(),
-        walker,
-        &diagnostic.into(),
-    )
-    .expect("Failed to throw linter diagnostic");
+pub fn emit_diagnostic(diagnostic: &Diagnostic, walker: &dyn file::Files) {
+    let mut emitter = Emitter::new(walker);
+    emitter
+        .emit_stderr(&diagnostic, true)
+        .expect("failed to throw linter diagnostic")
 }
 
+// TODO: don't use expect because we treat panics as linter bugs
 #[macro_export]
 macro_rules! lint_diagnostic {
     ($severity:ident, $($format_args:tt)*) => {
-        use $crate::DiagnosticBuilder;
-        use codespan_reporting::{
-            files::SimpleFiles,
-            term::{termcolor::{ColorChoice::Always, self}, emit}
-        };
+    use rslint_errors::Emitter;
 
-        let diag = DiagnosticBuilder::$severity(0, "", format!($($format_args)*));
-        emit(
-            &mut termcolor::StandardStream::stderr(Always),
-            &$crate::codespan_config(),
-            &SimpleFiles::<String, String>::new(),
-            &diag.into()
-        ).expect("Failed to throw linter diagnostic");
+    let diag = $crate::Diagnostic::$severity(1, "", format!($($format_args)*));
+    let file = rslint_errors::file::SimpleFile::new("".into(), "".into());
+    let mut emitter = Emitter::new(&file);
+    emitter
+        .emit_stderr(&diag, true)
+        .expect("failed to throw linter diagnostic")
     }
 }
 
@@ -233,6 +294,6 @@ macro_rules! lint_warn {
 #[macro_export]
 macro_rules! lint_note {
     ($($format_args:tt)*) => {{
-        $crate::lint_diagnostic!(note_diagnostic, $($format_args)*);
+        $crate::lint_diagnostic!(note, $($format_args)*);
     }};
 }

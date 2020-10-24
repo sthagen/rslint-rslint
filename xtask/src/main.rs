@@ -1,7 +1,7 @@
 use pico_args::Arguments;
 use xtask::{
     codegen::{self, Mode},
-    docgen,
+    coverage, docgen,
     glue::pushd,
     project_root, run_rustfmt, Result,
 };
@@ -32,6 +32,12 @@ fn main() -> Result<()> {
             docgen::run();
             Ok(())
         }
+        "coverage" => {
+            let free = args.free()?;
+            let query = free.get(0).map(String::as_str);
+            coverage::run(query);
+            Ok(())
+        }
         _ => {
             eprintln!(
                 "\
@@ -43,7 +49,8 @@ SUBCOMMANDS:
     format
     codegen
     syntax
-    docgen"
+    docgen
+    coverage"
             );
             Ok(())
         }
