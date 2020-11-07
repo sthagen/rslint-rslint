@@ -135,7 +135,7 @@ fn assign_expr_recursive(
     // TODO: dont always reparse as pattern since it will yield wonky errors for `(foo = true) = bar`
     if p.at_ts(ASSIGN_TOKENS) {
         if p.at(T![=]) {
-            if !is_valid_target(p, p.parse_marker(&target)) {
+            if !is_valid_target(p, p.parse_marker(&target)) && target.kind() != TEMPLATE {
                 p.rewind(token_cur);
                 p.drain_events(p.cur_event_pos() - event_cur);
                 target = pattern(p)?;

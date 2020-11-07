@@ -1,14 +1,15 @@
 mod cli;
-mod config;
 mod files;
+mod infer;
 mod panic_hook;
 
 pub use self::{
     cli::{show_all_rules, ExplanationRunner},
-    config::*,
     files::*,
+    infer::infer,
     panic_hook::*,
 };
+pub use rslint_config as config;
 pub use rslint_core::Outcome;
 pub use rslint_errors::{
     file, file::Files, Diagnostic, Emitter, Formatter, LongFormatter, Severity, ShortFormatter,
@@ -17,38 +18,47 @@ pub use rslint_errors::{
 use colored::*;
 use rayon::prelude::*;
 use rslint_core::autofix::recursively_apply_fixes;
-use rslint_core::{lint_file, util::find_best_match_for_name, CstRuleStore, LintResult, RuleLevel};
-use std::fs::write;
-
-pub(crate) const REPO_LINK: &str = "https://github.com/RDambrosio016/RSLint";
+use rslint_core::{lint_file, util::find_best_match_for_name, LintResult, RuleLevel};
+use rslint_lexer::Lexer;
+use std::process;
+use std::{fs::write, path::PathBuf};
 
 #[allow(unused_must_use)]
-pub fn run(glob: String, verbose: bool, fix: bool, dirty: bool, formatter: Option<String>) {
-    let res = glob::glob(&glob);
-    if let Err(err) = res {
-        lint_err!("Invalid glob pattern: {}", err);
-        return;
-    }
+pub fn run(
+    globs: Vec<String>,
+    verbose: bool,
+    fix: bool,
+    dirty: bool,
+    formatter: Option<String>,
+    no_global_config: bool,
+) {
+    let exit_code = run_inner(globs, verbose, fix, dirty, formatter, no_global_config);
+    process::exit(exit_code);
+}
 
-    let handle = config::Config::new_threaded();
-    let mut walker = FileWalker::from_glob(res.unwrap());
+/// The inner function for run to call destructors before we call [`process::exit`]
+fn run_inner(
+    globs: Vec<String>,
+    verbose: bool,
+    fix: bool,
+    dirty: bool,
+    formatter: Option<String>,
+    no_global_config: bool,
+) -> i32 {
+    let handle =
+        config::Config::new_threaded(no_global_config, |file, d| emit_diagnostic(&d, &file));
+    let mut walker = FileWalker::from_glob(collect_globs(globs));
     let joined = handle.join();
-    let config = joined.expect("config thread paniced");
+    let mut config = joined.expect("config thread paniced");
+    emit_diagnostics("short", &config.warnings(), &walker);
 
-    let store = if let Some(cfg) = config.as_ref().and_then(|cfg| cfg.rules.as_ref()) {
-        cfg.store()
-    } else {
-        CstRuleStore::new().builtins()
-    };
-    let mut formatter = formatter
-        .or_else(|| config.as_ref().map(|c| c.errors.formatter.clone()))
-        .unwrap_or_else(|| String::from("long"));
-
+    let mut formatter = formatter.unwrap_or_else(|| config.formatter());
+    let store = config.rules_store();
     verify_formatter(&mut formatter);
 
     if walker.files.is_empty() {
         lint_err!("No matching files found");
-        return;
+        return 2;
     }
 
     let mut results = walker
@@ -79,13 +89,19 @@ pub fn run(glob: String, verbose: bool, fix: bool, dirty: bool, formatter: Optio
     } else {
         0
     };
-    print_results(
-        &mut results,
-        &walker,
-        config.as_ref(),
-        fix_count,
-        &formatter,
-    );
+    print_results(&mut results, &walker, &config, fix_count, &formatter);
+
+    // print_results remaps the result to the appropriate severity
+    // so these diagnostic severities should be accurate
+    if results
+        .iter()
+        .flat_map(|res| res.diagnostics())
+        .any(|d| matches!(d.severity, Severity::Bug | Severity::Error))
+    {
+        1
+    } else {
+        0
+    }
 }
 
 pub fn apply_fixes(results: &mut Vec<LintResult>, walker: &mut FileWalker, dirty: bool) -> usize {
@@ -133,10 +149,78 @@ pub fn apply_fixes(results: &mut Vec<LintResult>, walker: &mut FileWalker, dirty
     fix_count
 }
 
+pub fn dump_ast(globs: Vec<String>) {
+    for_each_file(globs, |_, file| {
+        let header = if let Some(path) = &file.path {
+            format!("File {}", path.display())
+        } else {
+            format!("File {}", file.name)
+        };
+        println!("{}", header.red().bold());
+
+        println!("{:#?}", file.parse());
+    })
+}
+
+pub fn tokenize(globs: Vec<String>) {
+    for_each_file(
+        globs,
+        |walker,
+         JsFile {
+             path,
+             name,
+             id,
+             source,
+             ..
+         }| {
+            let header = if let Some(path) = path {
+                format!("File {}", path.display())
+            } else {
+                format!("File {}", name)
+            };
+            println!("{}", header.red().bold());
+
+            let tokens = Lexer::from_str(source.as_str(), *id)
+                .map(|(tok, d)| {
+                    if let Some(d) = d {
+                        emit_diagnostic(&d, walker);
+                    }
+                    tok
+                })
+                .collect::<Vec<_>>();
+
+            rslint_parser::TokenSource::new(source.as_str(), tokens.as_slice()).for_each(|tok| {
+                println!("{:?}@{}..{}", tok.kind, tok.range.start, tok.range.end);
+            });
+            println!();
+        },
+    )
+}
+
+fn collect_globs(globs: Vec<String>) -> impl Iterator<Item = PathBuf> {
+    globs
+        .into_iter()
+        .map(|pat| glob::glob(&pat))
+        .flat_map(|path| {
+            if let Err(err) = path {
+                lint_err!("Invalid glob pattern: {}", err);
+                None
+            } else {
+                path.ok()
+            }
+        })
+        .flat_map(|path| path.filter_map(Result::ok))
+}
+
+fn for_each_file(globs: Vec<String>, action: impl Fn(&FileWalker, &JsFile)) {
+    let walker = FileWalker::from_glob(collect_globs(globs));
+    walker.files.values().for_each(|file| action(&walker, file))
+}
+
 pub(crate) fn print_results(
     results: &mut Vec<LintResult>,
     walker: &FileWalker,
-    config: Option<&config::Config>,
+    config: &config::Config,
     fix_count: usize,
     formatter: &str,
 ) {
@@ -147,9 +231,7 @@ pub(crate) fn print_results(
             .iter_mut()
             .map(|x| (x.0, &mut x.1.diagnostics))
         {
-            if let Some(conf) = config.and_then(|cfg| cfg.rules.as_ref()) {
-                remap_diagnostics_to_level(diagnostics, conf.rule_level_by_name(rule_name));
-            }
+            remap_diagnostics_to_level(diagnostics, config.rule_level_by_name(rule_name));
         }
     }
 
