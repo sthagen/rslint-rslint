@@ -20,10 +20,11 @@ use rayon::prelude::*;
 use rslint_core::autofix::recursively_apply_fixes;
 use rslint_core::{lint_file, util::find_best_match_for_name, LintResult, RuleLevel};
 use rslint_lexer::Lexer;
+#[allow(unused_imports)]
 use std::process;
 use std::{fs::write, path::PathBuf};
 
-#[allow(unused_must_use)]
+#[allow(unused_must_use, unused_variables)]
 pub fn run(
     globs: Vec<String>,
     verbose: bool,
@@ -33,6 +34,7 @@ pub fn run(
     no_global_config: bool,
 ) {
     let exit_code = run_inner(globs, verbose, fix, dirty, formatter, no_global_config);
+    #[cfg(not(debug_assertions))]
     process::exit(exit_code);
 }
 
@@ -61,6 +63,8 @@ fn run_inner(
         return 2;
     }
 
+    let span = tracing::info_span!("lint files");
+    let guard = span.enter();
     let mut results = walker
         .files
         .par_keys()
@@ -83,6 +87,7 @@ fn run_inner(
             }
         })
         .collect::<Vec<_>>();
+    drop(guard);
 
     let fix_count = if fix {
         apply_fixes(&mut results, &mut walker, dirty)
@@ -104,6 +109,7 @@ fn run_inner(
     }
 }
 
+#[tracing::instrument(skip(results, walker, dirty))]
 pub fn apply_fixes(results: &mut Vec<LintResult>, walker: &mut FileWalker, dirty: bool) -> usize {
     let mut fix_count = 0;
     // TODO: should we aquire a file lock if we know we need to run autofix?
@@ -150,6 +156,8 @@ pub fn apply_fixes(results: &mut Vec<LintResult>, walker: &mut FileWalker, dirty
 }
 
 pub fn dump_ast(globs: Vec<String>) {
+    use rslint_parser::{NodeOrToken, WalkEvent};
+
     for_each_file(globs, |_, file| {
         let header = if let Some(path) = &file.path {
             format!("File {}", path.display())
@@ -158,7 +166,48 @@ pub fn dump_ast(globs: Vec<String>) {
         };
         println!("{}", header.red().bold());
 
-        println!("{:#?}", file.parse());
+        let parse = file.parse();
+        let mut level = 0;
+        for event in parse.preorder_with_tokens() {
+            match event {
+                WalkEvent::Enter(element) => {
+                    for _ in 0..level {
+                        print!("  ");
+                    }
+                    match element {
+                        NodeOrToken::Node(node) => {
+                            println!(
+                                "{}@{}",
+                                format!("{:?}", node.kind()).yellow(),
+                                format!("{:#?}", node.text_range()).cyan()
+                            );
+                        }
+                        NodeOrToken::Token(token) => {
+                            print!(
+                                "{}@{}",
+                                format!("{:?}", token.kind()).yellow(),
+                                format!("{:#?}", token.text_range()).cyan()
+                            );
+                            if token.text().len() < 25 {
+                                print!(" {}", format!("{:#?}", token.text()).green());
+                            } else {
+                                let text = token.text().as_str();
+                                for idx in 21..25 {
+                                    if text.is_char_boundary(idx) {
+                                        let text = format!("{} ...", &text[..idx]);
+                                        print!(" {}", format!("{:#?}", text).green());
+                                    }
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                    level += 1;
+                }
+                WalkEvent::Leave(_) => level -= 1,
+            }
+        }
+        println!();
     })
 }
 
@@ -197,7 +246,7 @@ pub fn tokenize(globs: Vec<String>) {
     )
 }
 
-fn collect_globs(globs: Vec<String>) -> impl Iterator<Item = PathBuf> {
+fn collect_globs(globs: Vec<String>) -> Vec<PathBuf> {
     globs
         .into_iter()
         .map(|pat| glob::glob(&pat))
@@ -210,6 +259,7 @@ fn collect_globs(globs: Vec<String>) -> impl Iterator<Item = PathBuf> {
             }
         })
         .flat_map(|path| path.filter_map(Result::ok))
+        .collect()
 }
 
 fn for_each_file(globs: Vec<String>, action: impl Fn(&FileWalker, &JsFile)) {

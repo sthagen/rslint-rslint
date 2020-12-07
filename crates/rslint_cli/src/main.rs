@@ -1,5 +1,8 @@
+mod flame;
+
 use rslint_cli::ExplanationRunner;
 use structopt::{clap::arg_enum, StructOpt};
+use tracing_subscriber::{prelude::*, Registry};
 
 const DEV_FLAGS_HELP: &str = "
 Developer flags that are used by RSLint developers to debug RSLint.
@@ -7,6 +10,8 @@ Developer flags that are used by RSLint developers to debug RSLint.
     -Z help     -- Shows this message
     -Z tokenize -- Tokenizes the input files and dumps the tokens
     -Z dumpast  -- Parses the input files and prints the parsed AST
+    -Z flame    -- Generates a flamegraph from all the tracing spans
+    -Z log      -- Log all tracing events
 
 Run with 'rslint -Z <FLAG> <FILES>'.";
 
@@ -33,6 +38,9 @@ pub(crate) struct Options {
     /// Disables the global config that is located in your global config directory.
     #[structopt(long)]
     no_global_config: bool,
+    /// Maximum number of threads that will be spawned by RSLint. (default: number of cpu cores)
+    #[structopt(long)]
+    max_threads: Option<usize>,
     /// The error formatter to use, either "short" or "long" (default)
     #[structopt(short = "F", long)]
     formatter: Option<String>,
@@ -47,6 +55,8 @@ arg_enum! {
         Help,
         Tokenize,
         DumpAst,
+        Flame,
+        Log,
     }
 }
 
@@ -67,6 +77,30 @@ fn main() {
 
     let opt = Options::from_args();
 
+    let num_threads = opt.max_threads.unwrap_or_else(num_cpus::get);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .expect("failed to build thread pool");
+
+    let mode = match opt.dev_flag {
+        Some(DevFlag::Flame) => DevFlag::Flame,
+        Some(DevFlag::Log) => DevFlag::Log,
+        _ => return execute(opt),
+    };
+
+    if let DevFlag::Flame = mode {
+        let (guard, layer) = flame::flame();
+        let subscriber = Registry::default().with(layer);
+        tracing::subscriber::with_default(subscriber, || execute(opt));
+        drop(guard);
+    } else if let DevFlag::Log = mode {
+        tracing_subscriber::fmt::init();
+        execute(opt);
+    }
+}
+
+fn execute(opt: Options) {
     match (opt.dev_flag, opt.cmd) {
         (Some(DevFlag::Help), _) => println!("{}", DEV_FLAGS_HELP),
         (Some(DevFlag::Tokenize), _) => rslint_cli::tokenize(opt.files),
