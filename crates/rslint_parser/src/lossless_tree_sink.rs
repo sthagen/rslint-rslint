@@ -18,6 +18,7 @@ pub struct LosslessTreeSink<'a> {
     text_pos: TextSize,
     token_pos: usize,
     state: State,
+    errors: Vec<ParserError>,
     inner: SyntaxTreeBuilder,
 }
 
@@ -29,6 +30,27 @@ enum State {
 }
 
 impl<'a> TreeSink for LosslessTreeSink<'a> {
+    fn consume_multiple_tokens(&mut self, amount: u8, kind: SyntaxKind) {
+        match mem::replace(&mut self.state, State::Normal) {
+            State::PendingStart => unreachable!(),
+            State::PendingFinish => self.inner.finish_node(),
+            State::Normal => (),
+        }
+        self.eat_trivias();
+        let len = TextSize::from(
+            self.tokens[self.token_pos..self.token_pos + amount as usize]
+                .iter()
+                .map(|x| x.len)
+                .sum::<usize>() as u32,
+        );
+
+        let range = TextRange::at(self.text_pos, len);
+        let text: SmolStr = self.text[range].into();
+        self.text_pos += len;
+        self.token_pos += amount as usize;
+        self.inner.token(kind, text);
+    }
+
     fn token(&mut self, kind: SyntaxKind) {
         match mem::replace(&mut self.state, State::Normal) {
             State::PendingStart => unreachable!(),
@@ -36,6 +58,9 @@ impl<'a> TreeSink for LosslessTreeSink<'a> {
             State::Normal => (),
         }
         self.eat_trivias();
+        if self.tokens.get(self.token_pos).is_none() {
+            println!("{:#?}", self.tokens);
+        }
         let len = TextSize::from(self.tokens[self.token_pos].len as u32);
         self.do_token(kind, len);
     }
@@ -93,8 +118,8 @@ impl<'a> TreeSink for LosslessTreeSink<'a> {
         }
     }
 
-    fn error(&mut self, error: ParserError) {
-        self.inner.error(error)
+    fn errors(&mut self, errors: Vec<ParserError>) {
+        self.errors = errors;
     }
 }
 
@@ -107,6 +132,7 @@ impl<'a> LosslessTreeSink<'a> {
             token_pos: 0,
             state: State::PendingStart,
             inner: SyntaxTreeBuilder::default(),
+            errors: vec![],
         }
     }
 
@@ -126,6 +152,7 @@ impl<'a> LosslessTreeSink<'a> {
                     token_pos: idx,
                     state: State::PendingStart,
                     inner: SyntaxTreeBuilder::default(),
+                    errors: vec![],
                 };
             }
             len += tok.len;
@@ -142,7 +169,7 @@ impl<'a> LosslessTreeSink<'a> {
             State::PendingStart | State::Normal => unreachable!(),
         }
 
-        self.inner.finish_raw()
+        (self.inner.finish(), self.errors)
     }
 
     fn eat_trivias(&mut self) {
@@ -207,6 +234,6 @@ fn n_attached_trivias<'a>(
 fn linebreak_count(text: &str) -> usize {
     text.matches('\n').count()
         + text.matches('\r').count()
-        + text.matches("\u{2028}").count()
-        + text.matches("\u{2029}").count()
+        + text.matches('\u{2028}').count()
+        + text.matches('\u{2029}').count()
 }

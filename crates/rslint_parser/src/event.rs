@@ -1,6 +1,6 @@
 //! Events emitted by the Parser which are then constructed into a syntax tree
 
-use std::mem;
+use std::{mem, ops::Range};
 
 use crate::{
     ParserError,
@@ -36,10 +36,12 @@ pub enum Event {
     /// `n_raw_tokens = 2` is used to produced a single `>>`.
     Token {
         kind: SyntaxKind,
+        range: Range<usize>,
     },
 
-    Error {
-        err: ParserError,
+    MultipleTokens {
+        amount: u8,
+        kind: SyntaxKind,
     },
 }
 
@@ -55,10 +57,11 @@ impl Event {
 
 /// Generate the syntax tree with the control of events.
 #[inline]
-pub fn process(sink: &mut dyn TreeSink, mut events: Vec<Event>) {
+pub fn process(sink: &mut impl TreeSink, mut events: Vec<Event>, errors: Vec<ParserError>) {
     let span = tracing::info_span!("processing parse events", count = events.len());
     let _guard = span.enter();
 
+    sink.errors(errors);
     let mut forward_parents = Vec::new();
 
     for i in 0..events.len() {
@@ -104,10 +107,10 @@ pub fn process(sink: &mut dyn TreeSink, mut events: Vec<Event>) {
                 }
             }
             Event::Finish { .. } => sink.finish_node(),
-            Event::Token { kind } => {
+            Event::Token { kind, .. } => {
                 sink.token(kind);
             }
-            Event::Error { err } => sink.error(err),
+            Event::MultipleTokens { amount, kind } => sink.consume_multiple_tokens(amount, kind),
         }
     }
 }

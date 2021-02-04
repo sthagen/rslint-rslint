@@ -26,6 +26,10 @@
 //! ⚠️ note however that many rules rely on checking tokens or the root and running on single nodes
 //! may yield incorrect results, you should only do this if you know about the rule's implementation.
 
+// FIXME: Workaround for https://github.com/GREsau/schemars/pull/65
+#![allow(clippy::field_reassign_with_default)]
+
+mod file;
 mod rule;
 mod store;
 mod testing;
@@ -37,6 +41,7 @@ pub mod rule_prelude;
 pub mod util;
 
 pub use self::{
+    file::File,
     rule::{CstRule, Inferable, Outcome, Rule, RuleCtx, RuleLevel, RuleResult},
     store::CstRuleStore,
 };
@@ -49,7 +54,7 @@ pub use crate::directives::{
 
 use dyn_clone::clone_box;
 use rayon::prelude::*;
-use rslint_parser::{parse_module, parse_text, util::SyntaxNodeExt, SyntaxKind, SyntaxNode};
+use rslint_parser::{util::SyntaxNodeExt, SyntaxKind, SyntaxNode};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -59,12 +64,11 @@ use std::sync::Arc;
 pub struct LintResult<'s> {
     /// Any diagnostics (errors, warnings, etc) emitted from the parser
     pub parser_diagnostics: Vec<Diagnostic>,
-    /// The store used for the lint run
-    pub store: &'s CstRuleStore,
     /// The diagnostics emitted by each rule run
     pub rule_results: HashMap<&'static str, RuleResult>,
     /// Any warnings or errors emitted by the directive parser
     pub directive_diagnostics: Vec<DirectiveError>,
+    pub store: &'s CstRuleStore,
     pub parsed: SyntaxNode,
     pub file_id: usize,
     pub verbose: bool,
@@ -94,7 +98,7 @@ impl LintResult<'_> {
     /// Attempt to automatically fix any fixable issues and return the fixed code.
     ///
     /// This will not run if there are syntax errors unless `dirty` is set to true.
-    pub fn fix(&mut self, dirty: bool) -> Option<String> {
+    pub fn fix(&mut self, dirty: bool, file: &File) -> Option<String> {
         if self
             .parser_diagnostics
             .iter()
@@ -103,49 +107,30 @@ impl LintResult<'_> {
         {
             None
         } else {
-            Some(autofix::recursively_apply_fixes(self))
+            Some(autofix::recursively_apply_fixes(self, file))
         }
     }
 }
 
 /// Lint a file with a specific rule store.
-#[tracing::instrument(skip(file_source, store, verbose))]
-pub fn lint_file(
-    file_id: usize,
-    file_source: impl AsRef<str>,
-    module: bool,
-    store: &CstRuleStore,
+#[tracing::instrument(skip(file, store, verbose))]
+pub fn lint_file<'s>(
+    file: &File,
+    store: &'s CstRuleStore,
     verbose: bool,
-) -> Result<LintResult, Diagnostic> {
-    let (parser_diagnostics, green) = {
-        let span = tracing::info_span!("parsing file");
-        let _guard = span.enter();
-        if module {
-            let parse = parse_module(file_source.as_ref(), file_id);
-            (parse.errors().to_owned(), parse.green())
-        } else {
-            let parse = parse_text(file_source.as_ref(), file_id);
-            (parse.errors().to_owned(), parse.green())
-        }
-    };
-
-    lint_file_inner(
-        SyntaxNode::new_root(green),
-        parser_diagnostics,
-        file_id,
-        store,
-        verbose,
-    )
+) -> Result<LintResult<'s>, Diagnostic> {
+    let (diagnostics, node) = file.parse_with_errors();
+    lint_file_inner(node, diagnostics, file, store, verbose)
 }
 
 /// used by lint_file and incrementally_relint to not duplicate code
-pub(crate) fn lint_file_inner(
+pub(crate) fn lint_file_inner<'s>(
     node: SyntaxNode,
     parser_diagnostics: Vec<Diagnostic>,
-    file_id: usize,
-    store: &CstRuleStore,
+    file: &File,
+    store: &'s CstRuleStore,
     verbose: bool,
-) -> Result<LintResult, Diagnostic> {
+) -> Result<LintResult<'s>, Diagnostic> {
     let mut new_store = store.clone();
     let directives::DirectiveResult {
         directives,
@@ -153,14 +138,14 @@ pub(crate) fn lint_file_inner(
     } = {
         let span = tracing::info_span!("parsing directives");
         let _gaurd = span.enter();
-        DirectiveParser::new_with_store(node.clone(), file_id, store).get_file_directives()
+        DirectiveParser::new_with_store(node.clone(), file, store).get_file_directives()
     };
 
     apply_top_level_directives(
         directives.as_slice(),
         &mut new_store,
         &mut directive_diagnostics,
-        file_id,
+        file.id,
     );
 
     let src: Arc<str> = Arc::from(node.to_string());
@@ -176,7 +161,7 @@ pub(crate) fn lint_file_inner(
                 rule.name(),
                 run_rule(
                     &**rule,
-                    file_id,
+                    file.id,
                     node.clone(),
                     verbose,
                     &directives,
@@ -188,11 +173,11 @@ pub(crate) fn lint_file_inner(
 
     Ok(LintResult {
         parser_diagnostics,
-        store,
         rule_results: results,
         directive_diagnostics,
+        store,
         parsed: node,
-        file_id,
+        file_id: file.id,
         verbose,
         fixed_code: None,
     })
@@ -214,7 +199,6 @@ pub fn run_rule(
     let _gaurd = span.enter();
 
     assert!(root.kind() == SyntaxKind::SCRIPT || root.kind() == SyntaxKind::MODULE);
-    let line_starts = rslint_errors::file::line_starts(&src).collect::<Vec<_>>();
     let mut ctx = RuleCtx {
         file_id,
         verbose,
@@ -228,11 +212,7 @@ pub fn run_rule(
     root.descendants_with_tokens_with(&mut |elem| {
         match elem {
             rslint_parser::NodeOrToken::Node(node) => {
-                let line = line_starts
-                    .binary_search(&elem.as_range().start)
-                    .unwrap_or_else(|next_line| next_line - 1);
-
-                if skip_node(directives, &node, rule, line) || node.kind() == SyntaxKind::ERROR {
+                if skip_node(directives, &node, rule) || node.kind() == SyntaxKind::ERROR {
                     return false;
                 }
                 rule.check_node(&node, &mut ctx);
@@ -264,6 +244,7 @@ pub fn get_group_rules_by_name(group_name: &str) -> Option<Vec<Box<dyn CstRule>>
     Some(match group_name {
         "errors" => errors(),
         "style" => style(),
+        "regex" => regex(),
         _ => return None,
     })
 }

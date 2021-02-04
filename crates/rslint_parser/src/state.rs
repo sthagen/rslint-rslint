@@ -1,12 +1,13 @@
-use std::collections::HashMap;
-use std::ops::{Deref, DerefMut, Range};
+use rslint_errors::Diagnostic;
 
 use crate::syntax::expr::EXPR_RECOVERY_SET;
 use crate::{CompletedMarker, Parser, SyntaxKind, TokenSet};
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut, Range};
 
 /// State kept by the parser while parsing.
 /// It is required for things such as strict mode or async functions
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParserState {
     /// If false, object expressions are not allowed to be parsed
     /// inside an expression.
@@ -40,6 +41,17 @@ pub struct ParserState {
     pub default_item: Option<Range<usize>>,
     /// The recovery set primary_expr will use
     pub expr_recovery_set: TokenSet,
+    pub should_record_names: bool,
+    pub name_map: HashMap<String, Range<usize>>,
+    /// Whether the parser is in a conditional expr (ternary expr)
+    pub in_cond_expr: bool,
+    pub in_case_cond: bool,
+    pub(crate) no_recovery: bool,
+    pub in_declare: bool,
+    pub in_binding_list_for_signature: bool,
+    pub decorators_were_valid: bool,
+    pub in_default: bool,
+    pub for_head_error: Option<Diagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,29 +77,21 @@ impl Default for ParserState {
             is_module: false,
             default_item: None,
             expr_recovery_set: EXPR_RECOVERY_SET,
+            name_map: HashMap::with_capacity(3),
+            should_record_names: false,
+            in_cond_expr: false,
+            in_case_cond: false,
+            no_recovery: false,
+            in_declare: false,
+            in_binding_list_for_signature: false,
+            decorators_were_valid: false,
+            in_default: false,
+            for_head_error: None,
         }
     }
 }
 
 impl ParserState {
-    pub fn module() -> Self {
-        Self {
-            allow_object_expr: true,
-            include_in: true,
-            continue_allowed: false,
-            break_allowed: false,
-            labels: HashMap::new(),
-            in_generator: false,
-            in_function: false,
-            potential_arrow_start: false,
-            in_async: false,
-            strict: Some(StrictMode::Module),
-            is_module: true,
-            default_item: None,
-            expr_recovery_set: EXPR_RECOVERY_SET,
-        }
-    }
-
     /// Check for duplicate defaults and update state
     pub fn check_default(
         &mut self,
@@ -112,11 +116,6 @@ impl ParserState {
         marker
     }
 
-    pub fn iteration_stmt(&mut self, set: bool) {
-        self.continue_allowed = set;
-        self.break_allowed = set;
-    }
-
     /// Turn on strict mode and issue a warning for redundant strict mode declarations
     pub fn strict(&mut self, p: &mut Parser, range: Range<usize>) {
         if let Some(strict) = self.strict.to_owned() {
@@ -127,7 +126,7 @@ impl ParserState {
                     err = err.secondary(prev_range, "strict mode is previous declared here");
                 }
                 StrictMode::Module => {
-                    err = err.note("modules are always strict mode");
+                    err = err.footer_note("modules are always strict mode");
                 }
                 StrictMode::Class(prev_range) => {
                     err = err.secondary(prev_range, "class bodies are always strict mode");

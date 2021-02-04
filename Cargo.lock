@@ -716,6 +716,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "generator"
 version = "0.6.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1631,6 +1640,7 @@ dependencies = [
  "rslint_errors",
  "schemars",
  "serde",
+ "serde_json",
  "toml",
  "tracing",
 ]
@@ -1642,11 +1652,13 @@ dependencies = [
  "criterion",
  "dyn-clone",
  "indoc",
+ "once_cell",
  "rayon",
  "rslint_errors",
  "rslint_lexer",
  "rslint_macros",
  "rslint_parser",
+ "rslint_regex",
  "rslint_text_edit",
  "schemars",
  "serde",
@@ -1695,6 +1707,7 @@ dependencies = [
  "futures",
  "itertools",
  "log",
+ "once_cell",
  "rayon",
  "rslint_config",
  "rslint_core",
@@ -1734,16 +1747,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rslint_regex"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "once_cell",
+ "rslint_errors",
+]
+
+[[package]]
 name = "rslint_rowan"
 version = "0.10.0"
 dependencies = [
  "erasable",
+ "fxhash",
  "m_lexer",
+ "nodrop",
  "rustc-hash",
  "serde",
- "servo_arc",
  "slice-dst",
+ "smallvec",
  "smol_str",
+ "stable_deref_trait",
  "text-size",
 ]
 
@@ -1908,9 +1933,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.59"
+version = "1.0.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcac07dbffa1c65e7f816ab9eba78eb142c6d44410f4eeba1e26e4f5dfa56b95"
+checksum = "4fceb2595057b6891a4ee808f70054bd2d12f0e97f1cbb78689b59f676df325a"
 dependencies = [
  "itoa",
  "ryu",
@@ -1938,16 +1963,6 @@ dependencies = [
  "linked-hash-map",
  "serde",
  "yaml-rust",
-]
-
-[[package]]
-name = "servo_arc"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98238b800e0d1576d8b6e3de32827c2d74bee68bb97748dcf5071fb53965432"
-dependencies = [
- "nodrop",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -1984,9 +1999,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7acad6f34eb9e8a259d3283d1e8c1d34d7415943d4895f65cc73813c7396fc85"
+checksum = "ae524f056d7d770e174287294f562e95044c68e88dec909a00d2094805db9d75"
 
 [[package]]
 name = "smol_str"
