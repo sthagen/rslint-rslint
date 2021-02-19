@@ -8,6 +8,10 @@ use crate::{
     Error, Result, Span,
 };
 
+// I know you may be tempted to get out your swords and condemn my use of inline everywhere,
+// but *trust* me i actually backed this up with benchmarks and it showed about a 50% speedup.
+
+#[inline]
 fn is_syntax_character(cp: char) -> bool {
     cp == '^'
         || cp == '$'
@@ -25,10 +29,12 @@ fn is_syntax_character(cp: char) -> bool {
         || cp == '|'
 }
 
+#[inline]
 fn is_regexp_identifier_start(cp: char) -> bool {
     is_id_start(cp) || cp == '$' || cp == '_'
 }
 
+#[inline]
 fn is_regexp_identifier_part(cp: char) -> bool {
     is_id_continue(cp) ||
       cp == '$' ||
@@ -37,6 +43,7 @@ fn is_regexp_identifier_part(cp: char) -> bool {
       cp == '\u{200d}' // unicode zero-width joiner
 }
 
+#[inline]
 fn is_id_start(cp: char) -> bool {
     if (cp as u32) < 0x41 {
         false
@@ -51,6 +58,7 @@ fn is_id_start(cp: char) -> bool {
     }
 }
 
+#[inline]
 fn is_id_continue(cp: char) -> bool {
     if (cp as u32) < 0x30 {
         false
@@ -213,12 +221,14 @@ impl<'pat> Parser<'pat> {
         Error::new(title.into(), Span::new(0, 0, 0))
     }
 
+    #[inline]
     fn next(&mut self) -> Option<char> {
         let c = self.peek()?;
         self.cur += c.len_utf8();
         Some(c)
     }
 
+    #[inline]
     fn next_with_range(&mut self) -> Option<(char, Range<usize>)> {
         let c = self.peek()?;
         let start = self.cur;
@@ -227,30 +237,52 @@ impl<'pat> Parser<'pat> {
         Some((c, start..self.cur))
     }
 
+    #[inline]
     fn peek(&mut self) -> Option<char> {
         let slice = &self.pattern.get(self.cur..)?;
         let c = slice.chars().next()?;
         Some(c)
     }
 
+    #[inline]
     fn peek_many(&mut self, count: usize) -> Option<&'pat str> {
         self.pattern.get(self.cur..self.cur + count)
     }
 
+    #[inline]
     fn take(&mut self, count: usize) -> Option<&'pat str> {
         let slice = self.peek_many(count)?;
         self.cur += slice.len();
         Some(slice)
     }
 
-    fn eat(&mut self, c: char) -> Result<char> {
-        let start = self.cur;
-        self.next_if(|x| x == c).ok_or_else(|| {
-            self.error(format!("expected `{}`", c))
-                .primary(self.span(start), "")
-        })
+    #[inline]
+    fn eat(&mut self, c: char) -> bool {
+        debug_assert!((c as u8) < 128);
+        // this is fine, utf8 is backwards compatible with ascii and eat is only ever called
+        // on ascii chars
+        if self.pattern.as_bytes().get(self.cur) == Some(&(c as u8)) {
+            self.cur += 1;
+            true
+        } else {
+            false
+        }
     }
 
+    #[inline]
+    fn eat_err(&mut self, c: char) -> Result<()> {
+        debug_assert!((c as u8) < 128);
+        if self.pattern.as_bytes().get(self.cur) == Some(&(c as u8)) {
+            self.cur += 1;
+            Ok(())
+        } else {
+            Err(self
+                .error(format!("expected `{}`", c))
+                .primary(self.span(self.cur), ""))
+        }
+    }
+
+    #[inline]
     fn try_eat_many(&mut self, eat: &str) -> bool {
         if self
             .peek_many(eat.len())
@@ -263,6 +295,7 @@ impl<'pat> Parser<'pat> {
         }
     }
 
+    #[inline]
     fn next_if<F: FnOnce(char) -> bool>(&mut self, pred: F) -> Option<char> {
         if pred(self.peek()?) {
             Some(self.next().unwrap())
@@ -271,14 +304,17 @@ impl<'pat> Parser<'pat> {
         }
     }
 
+    #[inline]
     fn span(&self, start: usize) -> Span {
         Span::new(self.offset, start, self.cur)
     }
 
+    #[inline]
     fn rewind(&mut self, start: usize) {
         self.cur = start;
     }
 
+    #[inline]
     fn cur_range(&self) -> Range<usize> {
         if self.cur == self.pattern.len() {
             return self.cur..self.cur + 1;
@@ -373,15 +409,20 @@ impl Parser<'_> {
     /// ```ignore
     /// /a|b|c/
     /// ```
+    #[inline]
     fn disjunction(&mut self) -> Result<Node> {
         let start = self.cur;
         let node = self.alternative()?;
-        let mut nodes = vec![node];
-        while self.eat('|').is_ok() {
+        let mut nodes = Vec::with_capacity(3);
+        nodes.push(node);
+        while self.eat('|') {
             nodes.push(self.alternative()?);
         }
 
-        if matches!(self.peek(), Some('*') | Some('+') | Some('?')) {
+        if matches!(
+            self.pattern.as_bytes().get(self.cur).copied(),
+            Some(b'*') | Some(b'+') | Some(b'?')
+        ) {
             let inner = self.cur;
             if let Ok(Ok(_)) = self.quantifier(Node::Empty) {
                 return Err(self
@@ -403,11 +444,12 @@ impl Parser<'_> {
         })
     }
 
+    #[inline]
     fn alternative(&mut self) -> Result<Node> {
         let start = self.cur;
         let mut terms = Vec::with_capacity(5);
-        while let Some(c) = self.peek() {
-            if c == ')' || c == '|' {
+        while let Some(b) = self.pattern.as_bytes().get(self.cur).copied() {
+            if b == b')' || b == b'|' {
                 break;
             }
             terms.push(self.term()?);
@@ -415,12 +457,15 @@ impl Parser<'_> {
 
         Ok(if terms.is_empty() {
             Node::Empty
+        } else if terms.len() == 1 {
+            terms.pop().unwrap()
         } else {
             Node::Alternative(self.span(start), terms)
         })
     }
 
     /// A term is either a `atom`, `assertion` or an `atom` followed by a `quantifier`.
+    #[inline]
     fn term(&mut self) -> Result<Node> {
         if self.state.u_flag || self.strict {
             if let Some(mut node) = self.assertion()? {
@@ -453,6 +498,7 @@ impl Parser<'_> {
         }
     }
 
+    #[inline]
     fn opt_quantifier(&mut self, node: Node, err: bool) -> Result<Node> {
         let start = self.cur;
         match self.quantifier(node.clone()) {
@@ -477,6 +523,7 @@ impl Parser<'_> {
     }
 
     // need to distinguish between parsing error and logic error (misordered range)
+    #[inline]
     fn quantifier(&mut self, node: Node) -> Result<Result<Node>> {
         let start = self.cur;
         // quantifier is always called when the next char is guaranteed to be
@@ -487,7 +534,7 @@ impl Parser<'_> {
             '?' => ir::QuantifierKind::Optional,
             '{' => {
                 let min = self.eat_digits(None, 10)?;
-                let max = if self.eat(',').is_ok() {
+                let max = if self.eat(',') {
                     if let Ok(max) = self.eat_digits(None, 10) {
                         Some(Some(max))
                     } else {
@@ -497,7 +544,7 @@ impl Parser<'_> {
                     None
                 };
 
-                self.eat('}')?;
+                self.eat_err('}')?;
                 if let Some(max) = max {
                     if let Some(inner_max) = max {
                         if min > inner_max {
@@ -517,20 +564,21 @@ impl Parser<'_> {
             self.span(start),
             Box::new(node),
             quantifier,
-            self.eat('?').is_ok(),
+            self.eat('?'),
         )))
     }
 
     /// Tries to parse an assertion, but will rewind to the start if
     /// it failed to find a assertion.
+    #[inline]
     fn assertion(&mut self) -> Result<Option<Node>> {
         let start = self.cur;
         self.state.last_assertion_is_quantifiable = false;
 
-        if let Ok(c) = self.eat('^').or_else(|_| self.eat('$')) {
+        if self.eat('^') || self.eat('$') {
             return Ok(Some(Node::Assertion(
                 self.span(start),
-                if c == '^' {
+                if self.pattern.as_bytes()[self.cur - 1] == b'^' {
                     AssertionKind::StartOfLine
                 } else {
                     AssertionKind::EndOfLine
@@ -538,11 +586,11 @@ impl Parser<'_> {
             )));
         }
 
-        if self.eat('\\').is_ok() {
-            if let Some(c) = self.next_if(|c| c == 'b' || c == 'B') {
+        if self.eat('\\') {
+            if self.eat('b') || self.eat('B') {
                 return Ok(Some(Node::Assertion(
                     self.span(start),
-                    if c == 'b' {
+                    if self.pattern.as_bytes()[self.cur - 1] == b'b' {
                         AssertionKind::WordBoundary
                     } else {
                         AssertionKind::NonWordBoundary
@@ -553,18 +601,19 @@ impl Parser<'_> {
         }
 
         if self.try_eat_many("(?") {
-            let is_lookbehind = self.ecma_version >= EcmaVersion::ES2018 && self.eat('<').is_ok();
-            let ty = self.eat('=').or_else(|_| self.eat('!'));
+            let is_lookbehind = self.ecma_version >= EcmaVersion::ES2018 && self.eat('<');
 
-            if let Ok(c) = ty {
+            if self.eat('=') || self.eat('!') {
+                let cur_byte = self.pattern.as_bytes()[self.cur - 1];
                 let node = self.disjunction()?;
-                self.eat(')')
+                self.eat_err(')')
                     .map_err(|err| err.primary(self.cur_range(), "expected a parentheses"))?;
-                let kind = match (is_lookbehind, c) {
-                    (false, '=') => AssertionKind::Lookahead,
-                    (false, '!') => AssertionKind::NegativeLookahead,
-                    (true, '=') => AssertionKind::Lookbehind,
-                    (true, '!') => AssertionKind::NegativeLookbehind,
+
+                let kind = match (is_lookbehind, cur_byte) {
+                    (false, b'=') => AssertionKind::Lookahead,
+                    (false, b'!') => AssertionKind::NegativeLookahead,
+                    (true, b'=') => AssertionKind::Lookbehind,
+                    (true, b'!') => AssertionKind::NegativeLookbehind,
                     _ => unreachable!(),
                 };
 
@@ -581,6 +630,7 @@ impl Parser<'_> {
         Ok(None)
     }
 
+    #[inline]
     fn atom(&mut self, extended: bool) -> Result<Node> {
         const DISALLOWED_PATTERN_CHARS: &[char] =
             &['^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', '|'];
@@ -596,7 +646,7 @@ impl Parser<'_> {
             '.' => Node::Dot(self.span(start)),
             '\\' if self.peek() == Some('c') && extended => {
                 self.next();
-                Node::Literal(self.span(start), 'c')
+                Node::Literal(self.span(start), 'c', 'c'.into())
             }
             '\\' => self.atom_escape(start, extended)?,
             '[' => self.character_class()?,
@@ -610,19 +660,19 @@ impl Parser<'_> {
                 } else {
                     self.rewind(start);
                     self.next();
-                    Node::Literal(self.span(start), '{')
+                    Node::Literal(self.span(start), '{', '{'.into())
                 }
             }
             c if extended => {
                 if !DISALLOWED_PATTERN_CHARS.contains(&c) {
-                    Node::Literal(self.span(start), c)
+                    Node::Literal(self.span(start), c, c.into())
                 } else {
                     return Err(self.error("expected an atom").primary(self.span(start), ""));
                 }
             }
             c => {
                 if !is_syntax_character(c) {
-                    Node::Literal(self.span(start), c)
+                    Node::Literal(self.span(start), c, c.into())
                 } else {
                     return Err(self.error("expected an atom").primary(self.span(start), ""));
                 }
@@ -631,6 +681,7 @@ impl Parser<'_> {
         Ok(node)
     }
 
+    #[inline]
     fn group(&mut self) -> Result<Node> {
         let start = self.cur;
         let noncapturing = if self.peek_many(2) == Some("?:") {
@@ -640,7 +691,7 @@ impl Parser<'_> {
             false
         };
         let name = if !noncapturing && self.peek_many(2) == Some("?<") {
-            self.eat('?').unwrap();
+            self.cur += 1;
             let name = self.group_name()?;
             if !self.state.group_names.contains(&name) {
                 self.state.group_names.push(name.clone());
@@ -654,7 +705,7 @@ impl Parser<'_> {
             None
         };
         let inner = Box::new(self.disjunction()?);
-        self.eat(')')?;
+        self.eat_err(')')?;
         let group = ir::Group {
             noncapturing,
             inner,
@@ -663,23 +714,25 @@ impl Parser<'_> {
         Ok(Node::Group(self.span(start), group))
     }
 
+    #[inline]
     fn group_name(&mut self) -> Result<String> {
-        self.eat('<')?;
+        self.eat_err('<')?;
         let mut string = String::from(self.identifier_start()?);
         while let Ok(c) = self.identifier_part() {
             string.push(c);
         }
-        self.eat('>')?;
+        self.eat_err('>')?;
         Ok(string)
     }
 
+    #[inline]
     fn identifier_start(&mut self) -> Result<char> {
         let force_u = !self.state.u_flag && self.ecma_version >= EcmaVersion::ES2020;
 
         if let Some(mut c) = self.peek() {
             let c1 = self.next();
             if c == '\\' {
-                self.eat('u')?;
+                self.eat_err('u')?;
                 c = self.unicode_escape(force_u)?;
             } else if (0xD800..=0xDBFF).contains(&(c as u32))
                 && c1.is_some()
@@ -700,6 +753,7 @@ impl Parser<'_> {
             .primary(self.cur_range(), ""))
     }
 
+    #[inline]
     fn identifier_part(&mut self) -> Result<char> {
         let start = self.cur;
         let force_u = !self.state.u_flag && self.ecma_version >= EcmaVersion::ES2020;
@@ -751,16 +805,17 @@ impl Parser<'_> {
             .primary(self.span(start), ""))
     }
 
-    fn character_class_atom(&mut self) -> Result<Result<Node>> {
+    #[inline]
+    fn character_class_atom(&mut self) -> Result<Option<Node>> {
         let start = self.cur;
         if let Some(c) = self.peek() {
             if c != '\\' && c != ']' {
                 self.next();
-                return Ok(Ok(Node::Literal(self.span(start), c)));
+                return Ok(Some(Node::Literal(self.span(start), c, c.into())));
             }
         }
 
-        if self.eat('\\').is_ok() {
+        if self.eat('\\') {
             let c = self.peek();
             let res = self.character_class_escape(start);
             if res.is_err() && c == Some('c') {
@@ -769,24 +824,23 @@ impl Parser<'_> {
                         .error("invalid character class escape")
                         .primary(self.span(start), ""));
                 } else {
-                    return Ok(Ok(Node::Literal(self.span(start), 'c')));
+                    return Ok(Some(Node::Literal(self.span(start), 'c', 'c'.into())));
                 }
             }
 
-            return Ok(Ok(res?));
+            return Ok(Some(res?));
         }
-        Ok(Err(self
-            .error("expected a character for a character class, but found none")
-            .primary(self.cur_range(), "")))
+        Ok(None)
     }
 
+    #[inline]
     fn character_class_escape(&mut self, start: usize) -> Result<Node> {
-        if self.eat('b').is_ok() {
-            return Ok(Node::Literal(self.span(start), '\x08'));
+        if self.eat('b') {
+            return Ok(Node::Literal(self.span(start), '\x08', "\\b".into()));
         }
 
-        if self.state.u_flag && self.eat('-').is_ok() {
-            return Ok(Node::Literal(self.span(start), '-'));
+        if self.state.u_flag && self.eat('-') {
+            return Ok(Node::Literal(self.span(start), '-', '-'.into()));
         }
 
         if !self.strict && !self.state.u_flag && self.peek() == Some('c') {
@@ -797,6 +851,7 @@ impl Parser<'_> {
                     return Ok(Node::Literal(
                         self.span(start),
                         char::from_u32(c as u32 % 0x20).unwrap(),
+                        self.pattern[start..self.cur].to_string(),
                     ));
                 } else {
                     self.cur -= 1;
@@ -809,36 +864,37 @@ impl Parser<'_> {
         self.atom_escape(start, false)
     }
 
+    #[inline]
     fn character_class(&mut self) -> Result<Node> {
         let start = self.cur;
-        let negated = self.eat('^').is_ok();
+        let negated = self.eat('^');
         let mut members = vec![];
 
         loop {
             let member_start = self.cur;
-            let atom = self.character_class_atom()?.ok();
-            if let Some(atom) = atom {
+            if let Some(atom) = self.character_class_atom()? {
                 let inner_start = self.cur;
-                if self.eat('-').is_err() {
+                if !self.eat('-') {
                     members.push(ir::CharacterClassMember::Single(atom));
                 } else {
-                    let end = if let Ok(n) = self.character_class_atom()? {
+                    let end = if let Some(n) = self.character_class_atom()? {
                         n
                     } else {
                         members.push(ir::CharacterClassMember::Single(atom));
                         members.push(ir::CharacterClassMember::Single(Node::Literal(
                             self.span(inner_start),
                             '-',
+                            '-'.into(),
                         )));
                         continue;
                     };
 
                     let min = match atom {
-                        Node::Literal(_, c) => Some(c as u32),
+                        Node::Literal(_, c, _) => Some(c as u32),
                         _ => None,
                     };
                     let max = match end {
-                        Node::Literal(_, c) => Some(c as u32),
+                        Node::Literal(_, c, _) => Some(c as u32),
                         _ => None,
                     };
 
@@ -856,12 +912,13 @@ impl Parser<'_> {
                         }
                         _ => {}
                     }
+                    members.push(ir::CharacterClassMember::Range(atom, end));
                 }
             } else {
                 break;
             }
         }
-        self.eat(']')?;
+        self.eat_err(']')?;
 
         Ok(Node::CharacterClass(
             self.span(start),
@@ -869,6 +926,7 @@ impl Parser<'_> {
         ))
     }
 
+    #[inline]
     fn word(&mut self, function: impl Fn(char) -> bool) -> Option<String> {
         let mut string = String::new();
         while let Some(c) = self.peek() {
@@ -890,13 +948,11 @@ impl Parser<'_> {
         self.word(|c| c.is_ascii_alphabetic() || c == '_' || c.is_digit(10))
     }
 
+    #[inline]
     fn unicode_property_value_expr(&mut self) -> Result<(Option<String>, String)> {
         let start = self.cur;
 
-        if let Some(name) = self
-            .unicode_property_name()
-            .filter(|_| self.eat('=').is_ok())
-        {
+        if let Some(name) = self.unicode_property_name().filter(|_| self.eat('=')) {
             if let Some(val) = self.unicode_property_value() {
                 return if is_valid_unicode_property(self.ecma_version, &name, &val) {
                     Ok((Some(name), val))
@@ -928,6 +984,7 @@ impl Parser<'_> {
     }
 
     /// Parses anything that comes after a `\`.
+    #[inline]
     #[allow(clippy::too_many_lines)]
     fn atom_escape(&mut self, start: usize, extended: bool) -> Result<Node> {
         let c = if let Some(c) = self.next() {
@@ -942,11 +999,11 @@ impl Parser<'_> {
         let span = self.span(start);
         let node = match c {
             // ControlEscape
-            't' => Node::Literal(span, '\t'),
-            'n' => Node::Literal(span, '\n'),
-            'v' => Node::Literal(span, '\x0B'),
-            'f' => Node::Literal(span, '\x0C'),
-            'r' => Node::Literal(span, '\r'),
+            't' => Node::Literal(span, '\t', "\\t".into()),
+            'n' => Node::Literal(span, '\n', "\\n".into()),
+            'v' => Node::Literal(span, '\x0B', "\\v".into()),
+            'f' => Node::Literal(span, '\x0C', "\\f".into()),
+            'r' => Node::Literal(span, '\r', "\\r".into()),
 
             'k' if self.state.n_flag => {
                 let name = self.group_name()?;
@@ -955,16 +1012,19 @@ impl Parser<'_> {
             }
             'c' if extended => {
                 self.cur -= 1;
-                Node::Literal(self.span(start), '\\')
+                Node::Literal(self.span(start), '\\', '\\'.into())
             }
             'c' if self.peek().map_or(false, |c| c.is_ascii_alphabetic()) => {
                 let c = self.next().unwrap();
                 Node::Literal(
                     self.span(start),
                     std::char::from_u32((c as u32) % 32).unwrap(),
+                    self.pattern[start..self.cur].into(),
                 )
             }
-            '0' if !self.peek().map_or(false, |c| c.is_digit(10)) => Node::Literal(span, '\0'),
+            '0' if !self.peek().map_or(false, |c| c.is_digit(10)) => {
+                Node::Literal(span, '\0', "\\0".into())
+            }
             '0' | '4' if !self.strict && !self.state.u_flag => {
                 self.cur -= 1;
                 let n;
@@ -982,7 +1042,11 @@ impl Parser<'_> {
                 } else {
                     n = n1;
                 }
-                Node::Literal(self.span(start), char::from_u32(n).unwrap())
+                Node::Literal(
+                    self.span(start),
+                    char::from_u32(n).unwrap(),
+                    self.pattern[start..self.cur].into(),
+                )
             }
             'x' => {
                 let digit_start = self.cur;
@@ -993,14 +1057,22 @@ impl Parser<'_> {
                             return Err(err);
                         } else {
                             self.rewind(digit_start);
-                            return Ok(Node::Literal(span, 'x'));
+                            return Ok(Node::Literal(span, 'x', "\\x".into()));
                         }
                     }
                 };
 
-                Node::Literal(self.span(start), char::from_u32(digits).unwrap())
+                Node::Literal(
+                    self.span(start),
+                    char::from_u32(digits).unwrap(),
+                    self.pattern[start..self.cur].into(),
+                )
             }
-            'u' => Node::Literal(self.span(start), self.unicode_escape(false)?),
+            'u' => Node::Literal(
+                self.span(start),
+                self.unicode_escape(false)?,
+                self.pattern[start..self.cur].into(),
+            ),
             'd' | 'D' => Node::PerlClass(span, ir::ClassPerlKind::Digit, c == 'D'),
             'w' | 'W' => Node::PerlClass(span, ir::ClassPerlKind::Word, c == 'W'),
             's' | 'S' => Node::PerlClass(span, ir::ClassPerlKind::Space, c == 'S'),
@@ -1035,12 +1107,13 @@ impl Parser<'_> {
                     return Ok(Node::Literal(
                         self.span(start),
                         char::from_u32(num).unwrap(),
+                        self.pattern[start..self.cur].into(),
                     ));
                 }
 
                 Node::BackReference(self.span(start), num)
             }
-            '/' if self.state.u_flag => Node::Literal(span, '/'),
+            '/' if self.state.u_flag => Node::Literal(span, '/', "\\/".into()),
             c => {
                 let valid = if self.state.u_flag {
                     is_syntax_character(c) || c == '/'
@@ -1053,7 +1126,7 @@ impl Parser<'_> {
                 };
 
                 if valid {
-                    Node::Literal(span, c)
+                    Node::Literal(span, c, self.pattern[start..self.cur].into())
                 } else {
                     return Err(self
                         .error("invalid escape sequence")
@@ -1065,10 +1138,11 @@ impl Parser<'_> {
         Ok(node)
     }
 
+    #[inline]
     fn property_escape(&mut self, start: usize, negated: bool) -> Result<Node> {
-        self.eat('{')?;
+        self.eat_err('{')?;
         let (class, member) = self.unicode_property_value_expr()?;
-        self.eat('}')?;
+        self.eat_err('}')?;
         Ok(Node::PerlClass(
             self.span(start),
             ir::ClassPerlKind::Unicode(class, member),
@@ -1076,6 +1150,7 @@ impl Parser<'_> {
         ))
     }
 
+    #[inline]
     fn unicode_escape(&mut self, force_u: bool) -> Result<char> {
         let u_flag = force_u || self.state.u_flag;
         let start = self.cur;
@@ -1093,7 +1168,7 @@ impl Parser<'_> {
             Some('{') if u_flag => {
                 self.next();
                 let digits = self.eat_digits(None, 16)?;
-                self.eat('}')?;
+                self.eat_err('}')?;
                 if let Some(c) = char::from_u32(digits) {
                     Ok(c)
                 } else {
@@ -1127,11 +1202,11 @@ impl Parser<'_> {
         }
     }
 
+    #[inline]
     fn unicode_surrogate_pair_escape(&mut self) -> Option<Result<char>> {
         let start = self.cur;
         if let Ok(lead) = self.eat_digits(4, 16) {
-            if (0xD800..=0xDBFF).contains(&lead) && self.eat('\\').is_ok() && self.eat('u').is_ok()
-            {
+            if (0xD800..=0xDBFF).contains(&lead) && self.eat('\\') && self.eat('u') {
                 if let Ok(trail) = self.eat_digits(4, 16) {
                     if (0xDC00..=0xDFFF).contains(&trail) {
                         let codepoint = (lead - 0xD800) * 0x400 + (trail - 0xDC00) + 0x10000;
@@ -1155,6 +1230,7 @@ impl Parser<'_> {
         None
     }
 
+    #[inline]
     fn eat_digits(&mut self, count: impl Into<Option<usize>> + Clone, radix: u32) -> Result<u32> {
         let start = self.cur;
         let is_none = count.clone().into().is_none();
