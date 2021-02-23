@@ -53,7 +53,6 @@ pub use crate::directives::{
 };
 
 use dyn_clone::clone_box;
-use rayon::prelude::*;
 use rslint_parser::{util::SyntaxNodeExt, SyntaxKind, SyntaxNode};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -113,12 +112,7 @@ impl LintResult<'_> {
 }
 
 /// Lint a file with a specific rule store.
-#[tracing::instrument(skip(file, store, verbose))]
-pub fn lint_file<'s>(
-    file: &File,
-    store: &'s CstRuleStore,
-    verbose: bool,
-) -> Result<LintResult<'s>, Diagnostic> {
+pub fn lint_file<'s>(file: &File, store: &'s CstRuleStore, verbose: bool) -> LintResult<'s> {
     let (diagnostics, node) = file.parse_with_errors();
     lint_file_inner(node, diagnostics, file, store, verbose)
 }
@@ -130,16 +124,12 @@ pub(crate) fn lint_file_inner<'s>(
     file: &File,
     store: &'s CstRuleStore,
     verbose: bool,
-) -> Result<LintResult<'s>, Diagnostic> {
+) -> LintResult<'s> {
     let mut new_store = store.clone();
     let directives::DirectiveResult {
         directives,
         diagnostics: mut directive_diagnostics,
-    } = {
-        let span = tracing::info_span!("parsing directives");
-        let _gaurd = span.enter();
-        DirectiveParser::new_with_store(node.clone(), file, store).get_file_directives()
-    };
+    } = { DirectiveParser::new_with_store(node.clone(), file, store).get_file_directives() };
 
     apply_top_level_directives(
         directives.as_slice(),
@@ -150,17 +140,15 @@ pub(crate) fn lint_file_inner<'s>(
 
     let src: Arc<str> = Arc::from(node.to_string());
 
-    let span = tracing::info_span!("running rules");
-    let _gaurd = span.enter();
-
+    // FIXME: Replace with thread pool
     let results = new_store
         .rules
-        .par_iter()
+        .into_iter()
         .map(|rule| {
             (
                 rule.name(),
                 run_rule(
-                    &**rule,
+                    &*rule,
                     file.id,
                     node.clone(),
                     verbose,
@@ -171,7 +159,7 @@ pub(crate) fn lint_file_inner<'s>(
         })
         .collect();
 
-    Ok(LintResult {
+    LintResult {
         parser_diagnostics,
         rule_results: results,
         directive_diagnostics,
@@ -180,7 +168,7 @@ pub(crate) fn lint_file_inner<'s>(
         file_id: file.id,
         verbose,
         fixed_code: None,
-    })
+    }
 }
 
 /// Run a single run on an entire parsed file.
@@ -195,9 +183,6 @@ pub fn run_rule(
     directives: &[Directive],
     src: Arc<str>,
 ) -> RuleResult {
-    let span = tracing::info_span!("run rule", rule = rule.name());
-    let _gaurd = span.enter();
-
     assert!(root.kind() == SyntaxKind::SCRIPT || root.kind() == SyntaxKind::MODULE);
     let mut ctx = RuleCtx {
         file_id,

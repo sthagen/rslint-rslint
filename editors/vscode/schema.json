@@ -166,9 +166,24 @@
               "pattern": "no-confusing-arrow"
             },
             {
+              "title": "Verify calls of `super()` in constructors",
+              "description": "",
+              "pattern": "constructor-super"
+            },
+            {
               "title": "Enforce or disallow spaces inside of blocks after the opening and closing brackets.",
               "description": "",
               "pattern": "block-spacing"
+            },
+            {
+              "title": "Disallow invalid regular expressions in literals and `RegExp` constructors.",
+              "description": "",
+              "pattern": "no-invalid-regexp"
+            },
+            {
+              "title": "Simplify regular expressions.",
+              "description": "",
+              "pattern": "simplify-regex"
             }
           ]
         },
@@ -184,6 +199,10 @@
                   "type": "string"
                 }
               }
+            },
+            "constructor-super": {
+              "title": "ConstructorSuper",
+              "type": "object"
             },
             "for-direction": {
               "title": "ForDirection",
@@ -299,6 +318,10 @@
                 }
               }
             },
+            "no-invalid-regexp": {
+              "title": "NoInvalidRegexp",
+              "type": "object"
+            },
             "no-irregular-whitespace": {
               "title": "NoIrregularWhitespace",
               "type": "object",
@@ -351,6 +374,10 @@
             },
             "no-unsafe-negation": {
               "title": "NoUnsafeNegation",
+              "type": "object"
+            },
+            "simplify-regex": {
+              "title": "SimplifyRegex",
               "type": "object"
             },
             "use-isnan": {
@@ -408,6 +435,10 @@
                 }
               }
             },
+            "constructor-super": {
+              "title": "ConstructorSuper",
+              "type": "object"
+            },
             "for-direction": {
               "title": "ForDirection",
               "type": "object"
@@ -522,6 +553,10 @@
                 }
               }
             },
+            "no-invalid-regexp": {
+              "title": "NoInvalidRegexp",
+              "type": "object"
+            },
             "no-irregular-whitespace": {
               "title": "NoIrregularWhitespace",
               "type": "object",
@@ -574,6 +609,10 @@
             },
             "no-unsafe-negation": {
               "title": "NoUnsafeNegation",
+              "type": "object"
+            },
+            "simplify-regex": {
+              "title": "SimplifyRegex",
               "type": "object"
             },
             "use-isnan": {

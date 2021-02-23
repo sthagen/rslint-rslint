@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Added
 
+- Added "constructor-super" rule
 - Added `util::StyleExt` for stylistic linting
 - Added `Fixer::delete_multiple`
 - Added more functions to `util::StyleExt`
@@ -32,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Removed
 
 - Removed the `store` field from `LintResult`
+- Removed `rayon` as the threadpool, replaced with `yastl`
 
 ### Fixed
 
