@@ -3,8 +3,8 @@
 
   <p>
     <strong>A fast, customizable, and easy to use 
-    <a href="https://www.javascript.com/">JavaScript</a></strong> and
-    <a href="https://typescriptlang.org/">TypeScript</a> linter
+    <a href="https://www.javascript.com/">JavaScript</a> and
+    <a href="https://typescriptlang.org/">TypeScript</a> linter</strong>
   </p>
 
   <p>
@@ -73,7 +73,7 @@ Outcome: 1 fail, 0 warn, 0 success
 help: for more information about the errors try the explain command: `rslint explain <rules>`
 ```
 
-The RSLint CLI works without a configuration file and will select reccomended non-stylistic rules to run.
+The RSLint CLI works without a configuration file and will select recommended non-stylistic rules to run.
 
 ## Features
 
@@ -83,7 +83,7 @@ native code.
 **Low memory footprint**. RSLint's syntax tree utilizes interning and other ways of drastically reducing memory usage
 while linting.
 
-**Sensible defaults**. The CLI assumes reccomended non-stylistic rules if no configuration file is specified and ignores directories such as
+**Sensible defaults**. The CLI assumes recommended non-stylistic rules if no configuration file is specified and ignores directories such as
 `node_modules`.
 
 **Error recovery**. RSLint's custom parser can recover from syntax errors and produce a usable syntax tree even when whole parts of
@@ -129,6 +129,18 @@ Allowing it to have powerful analysis without having to rely on separate structu
 **Untyped Syntax Tree**. RSLint's syntax tree is made of untyped nodes and untyped tokens at the low level, this allows for powerful, efficient traversal through the tree, e.g. `if_stmt.cons()?.child_with_ast::<SwitchStmt>()`.
 
 **Easy APIs**. RSLint uses easy to use builders for its complex errors, as well as builders for autofix. Everything is laid out to minimize the effort required to implement rules.
+
+## Performance
+
+The benchmarks can be found in the `benchmarks` directory. You can run them on your machine using `deno run -A --quiet benchmarks/bench.ts`.
+They are also run on CI and you can see the latest results if you click on the latest GitHub Actions run.
+
+| Project                         | RSLint | eslint |
+|---------------------------------|--------|--------|
+| engine262 (~42k LOC JavaScript) | 414ms  | 46.9s  |
+| Oak (~11k LOC TypeScript)       | 53ms   | 399ms  |
+
+(These benchmarks are run on AMD Ryzen 7 2700x, 8 Cores at 3.9MHz)
 
 ## License
 

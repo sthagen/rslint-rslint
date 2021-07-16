@@ -5,11 +5,12 @@ version = "0.0.0"
 authors = ["Darin Morrison <darinmorrison@users.noreply.github.com>"]
 description = "A language server implementation for rslint."
 license = "MIT"
-repository = "https://github.com/RDambrosio016/RSLint"
+repository = "https://github.com/rslint/rslint"
 
 [[bin]]
 name = "rslint-lsp"
 path = "src/bin/main.rs"
+doc = false
 
 [features]
 default = ["threaded"]

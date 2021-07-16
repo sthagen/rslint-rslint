@@ -14,8 +14,8 @@ use taplo::{parser::Parse, util::coords::Mapper};
 use tower_lsp::lsp_types::ConfigurationItem;
 use tower_lsp::{lsp_types::*, Client};
 
-#[serde(rename_all = "camelCase")]
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Config {
     pub incorrect_file_autofixes: bool,
 }
@@ -114,7 +114,7 @@ impl Session {
     }
 
     /// Get a mutable reference to a document associated with the session, if possible.
-    pub async fn get_mut_document(&self, uri: &Url) -> anyhow::Result<RefMut<'_, Url, Document>> {
+    pub fn get_mut_document(&self, uri: &Url) -> anyhow::Result<RefMut<'_, Url, Document>> {
         self.documents
             .get_mut(uri)
             .ok_or_else(|| Error::DocumentNotFound(uri.clone()).into())

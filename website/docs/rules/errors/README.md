@@ -21,6 +21,7 @@ unexpected behavior.
 | [no-debugger](./no-debugger.md) | Disallow the use of debugger statements. |
 | [no-dupe-keys](./no-dupe-keys.md) | Disallow duplicate keys in object literals. |
 | [no-duplicate-cases](./no-duplicate-cases.md) | Disallow duplicate test cases in `switch` statements. |
+| [no-duplicate-imports](./no-duplicate-imports.md) | Disallow duplicate imports. |
 | [no-empty](./no-empty.md) | Disallow empty block statements. |
 | [no-extra-boolean-cast](./no-extra-boolean-cast.md) | Disallow unnecessary boolean casts. |
 | [no-extra-semi](./no-extra-semi.md) | Disallow unneeded semicolons. |
@@ -30,6 +31,7 @@ unexpected behavior.
 | [no-prototype-builtins](./no-prototype-builtins.md) | Disallow direct use of `Object.prototype` builtins directly. |
 | [no-setter-return](./no-setter-return.md) | Disallow setters to return values. |
 | [no-sparse-arrays](./no-sparse-arrays.md) | Disallow sparse arrays. |
+| [no-this-before-super](./no-this-before-super.md) | Prevent the use of `this` / `super` before calling `super()`. |
 | [no-unexpected-multiline](./no-unexpected-multiline.md) | Disallow confusing newlines in expressions. |
 | [no-unsafe-finally](./no-unsafe-finally.md) | Forbid the use of unsafe control flow statements in try and catch blocks. |
 | [no-unsafe-negation](./no-unsafe-negation.md) | Deny the use of `!` on the left hand side of an `instanceof` or `in` expression where it is ambiguous. |

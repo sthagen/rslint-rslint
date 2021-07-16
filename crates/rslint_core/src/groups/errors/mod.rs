@@ -19,6 +19,7 @@ group! {
     no_debugger::NoDebugger,
     no_dupe_keys::NoDupeKeys,
     no_duplicate_cases::NoDuplicateCases,
+    no_duplicate_imports::NoDuplicateImports,
     no_empty::NoEmpty,
     no_extra_semi::NoExtraSemi,
     no_inner_declarations::NoInnerDeclarations,
@@ -33,4 +34,5 @@ group! {
     no_extra_boolean_cast::NoExtraBooleanCast,
     no_confusing_arrow::NoConfusingArrow,
     constructor_super::ConstructorSuper,
+    no_this_before_super::NoThisBeforeSuper,
 }
