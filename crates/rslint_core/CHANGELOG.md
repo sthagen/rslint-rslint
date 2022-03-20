@@ -6,11 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `require-yield` rule
+
+### Fixed
+
+- Do not flag typescript type-only imports as duplicates ([#124](https://github.com/rslint/rslint/issues/124))
+
 ## [0.3.0] - 2021-09-16
 
 ### Added
 
-- Added "constructor-super" rule
+- Added `constructor-super` rule
 - Added `util::StyleExt` for stylistic linting
 - Added `Fixer::delete_multiple`
 - Added more functions to `util::StyleExt`
